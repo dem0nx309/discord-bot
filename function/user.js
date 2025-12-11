@@ -1,62 +1,72 @@
 const { createCanvas } = require('canvas');
 const { urlEndpoint, logoUrl } = require("../config.json");
 async function fetchUser(pseudo, EmbedBuilder, AttachmentBuilder) {
-    const response = await fetch(urlEndpoint + "/user/" + pseudo);
-        const data = await response.text();
-        let result = JSON.parse(data);
-        if (result?.message) {
-          const response2 = await fetch(urlEndpoint + "/search/user/" + pseudo);
-          const data2 = await response2.text();
-          const result2 = JSON.parse(data2);
-          if (result2.length == 0) {
-             return { userEmbed: null, attachment: null };
-          } else {
-            result = result2[0];
-          }
-        };
-        const date = new Date(result.createdAt * 1);
-        const response2 = await fetch(urlEndpoint + "/progression/anime/" + result.uid);
-        const data2 = await response2.text();
-        const resultatProgression = JSON.parse(data2);
-        const episodes = resultatProgression.length;
-        let addition = 0;
-        let revisionageEpisode = 0;
-        let revisionageAnime = 0;
-        for (let i = 0; i < episodes; i++) {
-          addition += resultatProgression[i].progression.progression;
-          if (resultatProgression[i].progression.rewatch != undefined) {
-            revisionageEpisode = revisionageEpisode + resultatProgression[i].progression.rewatch * resultatProgression[i].progression.progression;
-            revisionageAnime = revisionageAnime + resultatProgression[i].progression.rewatch;
-          }
-        }
-        const responseStats = await fetch(urlEndpoint + '/progression/anime/stats/status/' + result.uid);
-        const stats = await responseStats.json();
-    
-        const imageCanvas = await createStatsCanvas(stats, {
-          episodes: episodes,
-          addition: addition,
-          revisionageAnime: revisionageAnime,
-          revisionageEpisode: revisionageEpisode
-        });
-        const attachment = new AttachmentBuilder(imageCanvas, { name: 'stats.png' });
-        const userEmbed = new EmbedBuilder()
-          .setColor(0x0099ff)
-          .setTitle(`${result.username} ${result.isPremium ? "★" : ""} `)
-          .setURL("https://hyakanime.fr/user/" + result.username)
-          .setAuthor({
-            name: "Hyakanime",
-            iconURL:
-              logoUrl,
-            url: "https://hyakanime.fr",
-          })
-          .setThumbnail(result.photoURL)
-          .setImage("attachment://stats.png")
-          .setTimestamp()
-          .setFooter({
-            text:
-              `Compte crée le ${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`,
-          });
-          return { userEmbed, attachment };
+  try {
+    const user = await getUserData(pseudo);
+    if (!user) return { userEmbed: null, attachment: null };
+
+    const [progressionData, stats] = await Promise.all([
+      fetch(`${urlEndpoint}/progression/anime/${user.uid}`).then(r => r.json()),
+      fetch(`${urlEndpoint}/progression/anime/stats/status/${user.uid}`).then(r => r.json())
+    ]);
+
+    const calculatedStats = progressionData.reduce((acc, { progression: { progression, rewatch = 0 } }) => {
+      acc.totalProgression += progression;
+      acc.rewatchedEpisodes += rewatch * progression;
+      acc.rewatchedAnimes += rewatch;
+      return acc;
+    }, { 
+      totalEpisodes: progressionData.length, 
+      totalProgression: 0, 
+      rewatchedEpisodes: 0, 
+      rewatchedAnimes: 0 
+    });
+
+    const imageCanvas = await createStatsCanvas(stats, {
+      episodes: calculatedStats.totalEpisodes,
+      addition: calculatedStats.totalProgression,
+      revisionageAnime: calculatedStats.rewatchedAnimes,
+      revisionageEpisode: calculatedStats.rewatchedEpisodes
+    });
+
+    // Conversion de la date
+    const creationDate = new Date(Number(user.createdAt));
+    const formattedDate = `${creationDate.getDate()}/${creationDate.getMonth() + 1}/${creationDate.getFullYear()}`;
+
+    // Badges utilisateur
+    const badges = [
+      user.isPremium ? "★" : "",
+      user.isStaff ? "🛡️" : ""
+    ].filter(Boolean).join(" ");
+
+    return {
+      userEmbed: new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`${user.username} ${badges}`)
+        .setURL(`https://hyakanime.fr/user/${user.username}`)
+        .setAuthor({ name: "Hyakanime", iconURL: logoUrl, url: "https://hyakanime.fr" })
+        .setThumbnail(user.photoURL)
+        .setImage("attachment://stats.png")
+        .setTimestamp()
+        .setFooter({ text: `Compte créé le ${formattedDate}` }),
+      attachment: new AttachmentBuilder(imageCanvas, { name: 'stats.png' })
+    };
+  } catch (error) {
+    console.error('Erreur fetchUser:', error);
+    throw error;
+  }
+}
+
+async function getUserData(pseudo) {
+  const response = await fetch(`${urlEndpoint}/user/${pseudo}`);
+  const result = await response.json();
+
+  if (result?.message) {
+    const searchResults = await fetch(`${urlEndpoint}/search/user/${pseudo}`).then(r => r.json());
+    return searchResults[0] || null;
+  }
+
+  return result;
 }
 
 async function createStatsCanvas(statsHyak, userStats) {
